@@ -1,6 +1,7 @@
 # import libraries
 
 import pandas as pd
+import numpy as np
 import os
 import re
 import xlsxwriter
@@ -23,7 +24,7 @@ def get_overlap(a, b):
 def match_cnvs_to_hotspots(cnvs_dir, hotspots_path, skip_list):
     
     hotspots_df = pd.read_csv(hotspots_path)
-    cnvs_hotspots_matched = []
+    matched = []
 
     for file in os.listdir(cnvs_dir):
         
@@ -39,13 +40,13 @@ def match_cnvs_to_hotspots(cnvs_dir, hotspots_path, skip_list):
             for _, cnv in sample_cnv_call.iterrows():
                 sample_range = [cnv["start"], cnv["end"]]
 
-                if hotspot["Chromosome"] != cnv["chromosome"]:
+                if hotspot["Chromosome"] != cnv["chr"]:
                     continue
 
                 overlap = get_overlap(hotspot_range, sample_range)
 
                 if overlap > 0:
-                    cnvs_hotspots_matched.append({
+                    matched.append({
                         "sample": file,
                         "hotspot_ID": hotspot["hotspot_ID"],
                         "chromosome": hotspot["Chromosome"],
@@ -60,7 +61,7 @@ def match_cnvs_to_hotspots(cnvs_dir, hotspots_path, skip_list):
                         "percent_overlap": overlap/(hotspot_range[1]-hotspot_range[0])*100
                     })
 
-    matched_df = pd.DataFrame(cnvs_hotspots_matched)
+    matched_df = pd.DataFrame(matched)
     
     return matched_df
 
@@ -70,56 +71,42 @@ def get_total_overlap(matched_df):
     total_overlap_dict = matched_df.groupby(["sample", "chromosome", "hotspot_start", "hotspot_end"])["percent_overlap"].sum().to_dict()
     return total_overlap_dict
 
-# compute blacklist regions (output: dictionary)
+# compute blacklist region %
 
 def get_blacklist_regions(matched_df, blacklist_bed):
 
     blacklist_df = pd.read_csv(blacklist_bed, sep="\t", names=["Chromosome", "Start", "End", "Motivation"], header=None)
-    blacklist_regions_dict = {}
-    low_mappability_dict = {}
-  
-        for _, cnv_row in matched_df.iterrows():
-            cnv_range = [cnv_row["cnv_start"], cnv_row["cnv_end"]]
-            key = (chromosome, cnv_row["cnv_start"], cnv_row["cnv_end"]) # key to store the cnv in dictionary
     
-            for _, blacklist_row in blacklist_df_chr.iterrows():
-                blacklist_range = [blacklist_row["Start"], blacklist_row["End"]]
-                overlap = get_overlap(cnv_range, blacklist_range)
-    
-                if overlap > 0:
-                    region_type = blacklist_row["Motivation"]
-    
-                    if region_type == "High Signal Region":
-                        blacklist_regions_dict.setdefault(key, []).append("High Signal Region") # change to high signal percentage
-    
-                    elif region_type == "Low Mappability":
-                        low_mappability_dict.setdefault(key, []).append("Low Mappability") # change to Low Mappability percentage
+    merged_df = matched_df.merge(blacklist_df.assign(Chromosome=blacklist_df["Chromosome"].str.replace("chr","")), left_on="chromosome", right_on="Chromosome", how="inner")
+    merged_df["overlap_start"] = merged_df[["cnv_start", "Start"]].max(axis=1)
+    merged_df["overlap_end"] = merged_df[["cnv_end", "End"]].min(axis=1)
+    merged_df["overlap"] = merged_df["overlap_end"]-merged_df["overlap_start"]
 
-    return blacklist_regions_dict
+    overlapping = merged_df[merged_df["overlap"]>0]
+    overlapping["percent_overlap"] = (overlapping["overlap"] / (overlapping["cnv_end"] - overlapping["cnv_start"])) * 100
 
-# compute gap regions (output: dictionary)
+    for motivation, colname in [("High Signal Region", "% High Signal Region"), ("Low Mappability", "% Low Mappability Region")]:
+        overlapping[colname] = np.where(overlapping["Motivation"]==motivation,
+                                        overlapping["percent_overlap"],
+                                        np.nan)
 
-def get_gap_regions(matched_df, gapregions_bed):
-    
-    gapregions_df = pd.read_csv(gapregions_bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
-    gapregions_dict = {}
-    
-    for chromosome in matched_df["chromosome"].unique():
-        matched_df_chr = matched_df[matched_df["chromosome"]==chromosome]
-        gapregions_df_chr = gapregions_df[gapregions_df["Chromosome"]==chromosome]
-    
-        for _, cnv_row in matched_df_chr.iterrows():
-            cnv_range = [cnv_row["cnv_start"], cnv_row["cnv_end"]]
-            key = (chromosome, cnv_row["cnv_start"], cnv_row["cnv_end"]) # key to store the cnv in dictionary
-    
-            for _, gap_row in gapregions_df_chr.iterrows():
-                gapregion_range = [gap_row["Start"], gap_row["End"]]
-                overlap = get_overlap(cnv_range, gapregion_range)
+    return overlapping
 
-                if overlap > 0:
-                    gapregions_dict.setdefault(key, []).append("Gap Region")
+# compute gap region %
 
-    return gapregions_dict
+def get_gap_regions(df, bed):
+
+    annotation_df = pd.read_csv(bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
+    
+    df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr","")), left_on="chromosome", right_on="Chromosome", how="inner")
+    df["overlap_start"] = df[["cnv_start", "Start"]].max(axis=1)
+    df["overlap_end"] = df[["cnv_end", "End"]].min(axis=1)
+    df["overlap"] = df["overlap_end"]-df["overlap_start"]
+
+    overlapping = df[df["overlap"]>0]
+    overlapping["Gap Fraction"] = (overlapping["overlap"] / (overlapping["cnv_end"] - overlapping["cnv_start"])) * 100
+
+    return overlapping
 
 # apply function to all files in directory
 
