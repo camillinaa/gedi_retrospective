@@ -7,7 +7,7 @@ import xlsxwriter
 
 # set paths
 
-Common_Abnormal_Regions_path = "Common_Abnormal_Regions.csv"
+Common_Abnormal_Regions_path = "~/GEDI_retrospective/data/Common_Abnormal_Regions.csv"
 cnv_calls_dir = "/facility/nfdata-omics/projects/GEDI_LPS/sample_prioritization/controlFREEC_calls/"
 testfile_dir = "/facility/nfdata-omics/projects/GEDI_LPS/sample_prioritization/testfile/" 
 blacklist_bed = "/facility/nfdata-omics/reference/human/encode/hg38_v2/hg38-blacklist.v2.bed"
@@ -21,39 +21,47 @@ def get_overlap(a, b):
 # cnv-hotspot matching function
 
 def match_cnvs_to_hotspots(cnvs_dir, hotspots_path, skip_list):
+    
     hotspots_df = pd.read_csv(hotspots_path)
     cnvs_hotspots_matched = []
+
     for file in os.listdir(cnvs_dir):
+        
         if file in skip_list:
             continue
+
         sample_cnv_call = pd.read_csv(cnvs_dir+str(file), sep="\t", names=["chr", "start", "end", "copy_number", "category"], header=None)
         sample_type = "clone" if re.search(r"C\d+(?=\.markdup\.bam_CNVs)", file) else "parental"
-        for chromosome in hotspots_df["Chromosome"].unique():
-            if sample_cnv_call["chr"].isin([chromosome]).any() == True:
-                hotspots_chr = hotspots_df[hotspots_df["Chromosome"] == str(chromosome)]
-                sample_cnv_call_chr = sample_cnv_call[sample_cnv_call["chr"] == str(chromosome)]
-                for _, row in hotspots_chr.iterrows():
-                    hotspot_range = [row["start_clean"], row["end_clean"]]
-                    for _, row in sample_cnv_call_chr.iterrows():
-                        sample_range = [row["start"], row["end"]]
-                        overlap = get_overlap(hotspot_range, sample_range)
-                        if overlap > 0:
-                            cnvs_hotspots_matched.append({
-                                "sample": file,
-                                "hotspot_ID": hotspots_chr["hotspot_ID"],
-                                "chromosome": chromosome,
-                                "sample_type": sample_type,
-                                "cnv_start": sample_range[0],
-                                "cnv_end": sample_range[1],
-                                "hotspot_start": hotspot_range[0],
-                                "hotspot_end": hotspot_range[1],
-                                "overlap_start": max(sample_range[0], hotspot_range[0]),
-                                "overlap_end": min(sample_range[1], hotspot_range[1]),
-                                "overlap_length": overlap, 
-                                "percent_overlap": overlap/(hotspot_range[1]-hotspot_range[0])*100
-                                # add quality metrics
-                            })
+
+        for _, hotspot in hotspots_df.iterrows():
+            hotspot_range = [hotspot["start_clean"], hotspot["end_clean"]]
+
+            for _, cnv in sample_cnv_call.iterrows():
+                sample_range = [cnv["start"], cnv["end"]]
+
+                if hotspot["Chromosome"] != cnv["chromosome"]:
+                    continue
+
+                overlap = get_overlap(hotspot_range, sample_range)
+
+                if overlap > 0:
+                    cnvs_hotspots_matched.append({
+                        "sample": file,
+                        "hotspot_ID": hotspot["hotspot_ID"],
+                        "chromosome": hotspot["Chromosome"],
+                        "sample_type": sample_type,
+                        "cnv_start": sample_range[0],
+                        "cnv_end": sample_range[1],
+                        "hotspot_start": hotspot_range[0],
+                        "hotspot_end": hotspot_range[1],
+                        "overlap_start": max(sample_range[0], hotspot_range[0]),
+                        "overlap_end": min(sample_range[1], hotspot_range[1]),
+                        "overlap_length": overlap, 
+                        "percent_overlap": overlap/(hotspot_range[1]-hotspot_range[0])*100
+                    })
+
     matched_df = pd.DataFrame(cnvs_hotspots_matched)
+    
     return matched_df
 
 # compute total percentage overlap for all cnvs covering the same hotspot in each sample (output: dictionary)
@@ -65,48 +73,58 @@ def get_total_overlap(matched_df):
 # compute blacklist regions (output: dictionary)
 
 def get_blacklist_regions(matched_df, blacklist_bed):
+
     blacklist_df = pd.read_csv(blacklist_bed, sep="\t", names=["Chromosome", "Start", "End", "Motivation"], header=None)
     blacklist_regions_dict = {}
     low_mappability_dict = {}
-    for chromosome in matched_df["chromosome"].unique():
-        matched_df_chr = matched_df[matched_df["chromosome"] == chromosome]
-        blacklist_df_chr = blacklist_df[blacklist_df["Chromosome"] == chromosome]
-        for _, cnv_row in matched_df_chr.iterrows():
+  
+        for _, cnv_row in matched_df.iterrows():
             cnv_range = [cnv_row["cnv_start"], cnv_row["cnv_end"]]
             key = (chromosome, cnv_row["cnv_start"], cnv_row["cnv_end"]) # key to store the cnv in dictionary
+    
             for _, blacklist_row in blacklist_df_chr.iterrows():
                 blacklist_range = [blacklist_row["Start"], blacklist_row["End"]]
                 overlap = get_overlap(cnv_range, blacklist_range)
+    
                 if overlap > 0:
                     region_type = blacklist_row["Motivation"]
+    
                     if region_type == "High Signal Region":
-                        blacklist_regions_dict.setdefault(key, []).append("High Signal Region")
+                        blacklist_regions_dict.setdefault(key, []).append("High Signal Region") # change to high signal percentage
+    
                     elif region_type == "Low Mappability":
-                        blacklist_regions_dict.setdefault(key, []).append("Low Mappability")
+                        low_mappability_dict.setdefault(key, []).append("Low Mappability") # change to Low Mappability percentage
 
     return blacklist_regions_dict
 
 # compute gap regions (output: dictionary)
 
 def get_gap_regions(matched_df, gapregions_bed):
+    
     gapregions_df = pd.read_csv(gapregions_bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
     gapregions_dict = {}
+    
     for chromosome in matched_df["chromosome"].unique():
         matched_df_chr = matched_df[matched_df["chromosome"]==chromosome]
         gapregions_df_chr = gapregions_df[gapregions_df["Chromosome"]==chromosome]
+    
         for _, cnv_row in matched_df_chr.iterrows():
             cnv_range = [cnv_row["cnv_start"], cnv_row["cnv_end"]]
             key = (chromosome, cnv_row["cnv_start"], cnv_row["cnv_end"]) # key to store the cnv in dictionary
+    
             for _, gap_row in gapregions_df_chr.iterrows():
                 gapregion_range = [gap_row["Start"], gap_row["End"]]
                 overlap = get_overlap(cnv_range, gapregion_range)
+
                 if overlap > 0:
                     gapregions_dict.setdefault(key, []).append("Gap Region")
+
     return gapregions_dict
 
 # apply function to all files in directory
 
 def main():
+
     not_included = ["A549.markdup.bam_CNVs"] # define samples to exclude
 
     cnv_hotspot_match = match_cnvs_to_hotspots(cnv_calls_dir, Common_Abnormal_Regions_path, not_included)
