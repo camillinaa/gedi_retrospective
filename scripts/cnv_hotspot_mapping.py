@@ -71,71 +71,35 @@ def get_total_overlap(matched_df):
     total_overlap_dict = matched_df.groupby(["sample", "chromosome", "hotspot_start", "hotspot_end"])["percent_overlap"].sum().to_dict()
     return total_overlap_dict
 
-# compute blacklist region %
+# general region annotation % function 
 
-def get_blacklist_regions(matched_df, blacklist_bed):
-
-    blacklist_df = pd.read_csv(blacklist_bed, sep="\t", names=["Chromosome", "Start", "End", "Motivation"], header=None)
-    
-    merged_df = matched_df.merge(blacklist_df.assign(Chromosome=blacklist_df["Chromosome"].str.replace("chr","")), left_on="chromosome", right_on="Chromosome", how="inner")
-    merged_df["overlap_start"] = merged_df[["cnv_start", "Start"]].max(axis=1)
-    merged_df["overlap_end"] = merged_df[["cnv_end", "End"]].min(axis=1)
-    merged_df["overlap"] = merged_df["overlap_end"]-merged_df["overlap_start"]
-
-    overlapping = merged_df[merged_df["overlap"]>0]
-    overlapping["percent_overlap"] = (overlapping["overlap"] / (overlapping["cnv_end"] - overlapping["cnv_start"])) * 100
-
-    for motivation, colname in [("High Signal Region", "% High Signal Region"), ("Low Mappability", "% Low Mappability Region")]:
-        overlapping[colname] = np.where(overlapping["Motivation"]==motivation,
-                                        overlapping["percent_overlap"],
-                                        np.nan)
-
-    return overlapping
-
-# compute gap region %
-
-def get_gap_regions(df, bed):
-
-    annotation_df = pd.read_csv(bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
+def apply_annotation(df, annotation_df, colname):
     
     df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr","")), left_on="chromosome", right_on="Chromosome", how="inner")
     df["overlap_start"] = df[["cnv_start", "Start"]].max(axis=1)
     df["overlap_end"] = df[["cnv_end", "End"]].min(axis=1)
     df["overlap"] = df["overlap_end"]-df["overlap_start"]
 
-    overlapping = df[df["overlap"]>0]
-    overlapping["Gap Fraction"] = (overlapping["overlap"] / (overlapping["cnv_end"] - overlapping["cnv_start"])) * 100
+    df[colname] = (df["overlap"] / (df["cnv_end"] - df["cnv_start"])) * 100
 
-    return overlapping
+    return df
 
-# apply function to all files in directory
+# apply functions to all files in directory
 
-def main():
+not_included = ["A549.markdup.bam_CNVs"] # define samples to exclude
 
-    not_included = ["A549.markdup.bam_CNVs"] # define samples to exclude
+cnv_hotspot_match = match_cnvs_to_hotspots(cnv_calls_dir, Common_Abnormal_Regions_path, not_included)
+total_overlap = get_total_overlap(cnv_hotspot_match)
 
-    cnv_hotspot_match = match_cnvs_to_hotspots(cnv_calls_dir, Common_Abnormal_Regions_path, not_included)
-    
-    total_overlap = get_total_overlap(cnv_hotspot_match)
-    blacklist_regions = get_blacklist_regions(cnv_hotspot_match, blacklist_bed)
-    gap_regions = get_gap_regions(cnv_hotspot_match, gapregions_bed)
+blacklist_df = pd.read_csv(blacklist_bed, sep="\t", names=["Chromosome", "Start", "End", "Motivation"], header=None)
+highsignal_annot = blacklist_df[blacklist_df["Motivation"]=="High Signal Region"].drop("Motivation", axis=1)
+lowmap_annot = blacklist_df[blacklist_df["Motivation"]=="Low Mappability"].drop("Motivation", axis=1)
+gapregions_annot = pd.read_csv(gapregions_bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
 
-    final_df = cnv_hotspot_match.assign(
-        total_overlap=cnv_hotspot_match.apply(
-            lambda row: total_overlap.get(
-                (row["sample"], row["chromosome"], row["hotspot_start"], row["hotspot_end"]), 0
-            ), axis=1
-        ),
-        genome_region=cnv_hotspot_match["sample"].map(blacklist_regions)
-    )
+df_annotated = annotate(cnv_hotspot_match, highsignal_annot, "% High Signal Region")
+xxx = annotate(cnv_hotspot_match, lowmap_annot, "% Low Mappability Region")
+xxx = annotate(cnv_hotspot_match, gapregions_annot, "Gap Fraction")
 
-    writer = pd.ExcelWriter('cnvs_hotspots_mapped.xlsx', engine='xlsxwriter')
-    final_df.to_excel(writer, sheet_name='Sheet1')
-    writer.save()
-
-    return final_df
-
-
-
-if __name__ == "__main__":
-    final_result=main()
+writer = pd.ExcelWriter('cnvs_hotspots_mapped.xlsx', engine='xlsxwriter')
+final_df.to_excel(writer, sheet_name='Sheet1')
+writer.save()
