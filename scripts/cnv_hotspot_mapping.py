@@ -65,22 +65,25 @@ def match_cnvs_to_hotspots(cnvs_dir, hotspots_path, skip_list):
     
     return matched_df
 
-# compute total percentage overlap for all cnvs covering the same hotspot in each sample (output: dictionary)
+# add percentage overlap for all cnvs covering the same hotspot in each sample 
 
-def get_total_overlap(matched_df):
-    total_overlap_dict = matched_df.groupby(["sample", "chromosome", "hotspot_start", "hotspot_end"])["percent_overlap"].sum().to_dict()
-    return total_overlap_dict
+def add_total_overlap(matched_df):
+    total_overlap_series = matched_df.groupby(["sample", "chromosome", "hotspot_start", "hotspot_end"])["percent_overlap"].sum().rename("total_overlap")
+    df = matched_df.merge(total_overlap_series, on=["sample", "chromosome", "hotspot_start", "hotspot_end"], how="left")
+    return df
 
 # general region annotation % function 
 
 def apply_annotation(df, annotation_df, colname):
     
-    df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr","")), left_on="chromosome", right_on="Chromosome", how="inner")
+    df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr","")), left_on="chromosome", right_on="Chromosome", how="left")
     df["overlap_start"] = df[["cnv_start", "Start"]].max(axis=1)
     df["overlap_end"] = df[["cnv_end", "End"]].min(axis=1)
     df["overlap"] = df["overlap_end"]-df["overlap_start"]
 
-    df[colname] = (df["overlap"] / (df["cnv_end"] - df["cnv_start"])) * 100
+    df[colname] = ((df["overlap"] / (df["cnv_end"] - df["cnv_start"])) * 100).where(df["overlap"]>0, other=pd.NA)
+
+    df= df.drop(["Chromosome", "Start", "End", 'overlap_start', 'overlap_end', 'overlap'], axis=1)
 
     return df
 
@@ -89,16 +92,22 @@ def apply_annotation(df, annotation_df, colname):
 not_included = ["A549.markdup.bam_CNVs"] # define samples to exclude
 
 cnv_hotspot_match = match_cnvs_to_hotspots(cnv_calls_dir, Common_Abnormal_Regions_path, not_included)
-total_overlap = get_total_overlap(cnv_hotspot_match)
+total_overlap = add_total_overlap(cnv_hotspot_match)
+df = total_overlap[["sample","chromosome","hotspot_ID","cnv_start","cnv_end","total_overlap"]] 
 
 blacklist_df = pd.read_csv(blacklist_bed, sep="\t", names=["Chromosome", "Start", "End", "Motivation"], header=None)
 highsignal_annot = blacklist_df[blacklist_df["Motivation"]=="High Signal Region"].drop("Motivation", axis=1)
 lowmap_annot = blacklist_df[blacklist_df["Motivation"]=="Low Mappability"].drop("Motivation", axis=1)
 gapregions_annot = pd.read_csv(gapregions_bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
 
-df_annotated = annotate(cnv_hotspot_match, highsignal_annot, "% High Signal Region")
-xxx = annotate(cnv_hotspot_match, lowmap_annot, "% Low Mappability Region")
-xxx = annotate(cnv_hotspot_match, gapregions_annot, "Gap Fraction")
+df_annotated = df 
+annotations = [
+    (highsignal_annot, "% High Signal Region"),
+    (lowmap_annot, "% Low Mappability Region"),
+    (gapregions_annot, "Gap Fraction")
+]
+for annot, colname in annotations:
+    df_annotated = apply_annotation(df_annotated, annot, colname)
 
 writer = pd.ExcelWriter('cnvs_hotspots_mapped.xlsx', engine='xlsxwriter')
 final_df.to_excel(writer, sheet_name='Sheet1')
