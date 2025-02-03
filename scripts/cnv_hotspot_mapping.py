@@ -78,22 +78,18 @@ def add_total_overlap(matched_df):
 def apply_annotation(df, annotation_df, colname):
 
     annotation_df = annotation_df.drop_duplicates(subset=["Chromosome", "Start", "End"])
-    
-    #df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr", "")),
-    #              left_on="chromosome", right_on="Chromosome", how="left")
 
     df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr", "")),
-                  left_on="chromosome", right_on="Chromosome", how="cross")
+                  left_on="chromosome", right_on="Chromosome", how="left")
 
-    df["overlap_start"] = df[["cnv_start", "Start"]].max(axis=1)
-    df["overlap_end"] = df[["cnv_end", "End"]].min(axis=1)
-    df["overlap"] = df["overlap_end"] - df["overlap_start"] +1
-    
+    df["overlap_start"] = df[["cnv_start", "Start"]].max(axis=1).where(df["Start"].notna(), other=pd.NA)
+    df["overlap_end"] = df[["cnv_end", "End"]].min(axis=1).where(df["End"].notna(), other=pd.NA)
+    df["overlap"] = df["overlap_end"] - df["overlap_start"] + 1
+
+    df = df.groupby(["sample", "sample_type", "chromosome", "hotspot_ID", "cnv_start", "cnv_end", "total_overlap"], as_index=False)["overlap"].sum()
     df[colname] = ((df["overlap"] / (df["cnv_end"] - df["cnv_start"]+1)) * 100).where(df["overlap"] > 0, other=0)
     
     df = df.drop(["Chromosome", "Start", "End", 'overlap_start', 'overlap_end', 'overlap'], axis=1)
-    
-    df = df.groupby(["sample", "chromosome", "hotspot_ID", "cnv_start", "cnv_end", "total_overlap"], as_index=False).sum()
     
     return df[colname]
 
