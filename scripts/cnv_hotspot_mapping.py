@@ -5,7 +5,6 @@ import numpy as np
 import os
 import re
 import xlsxwriter
-import plotly.express as px
 
 # set paths
 
@@ -78,20 +77,32 @@ def add_total_overlap(matched_df):
 def apply_annotation(df, annotation_df, colname):
 
     annotation_df = annotation_df.drop_duplicates(subset=["Chromosome", "Start", "End"])
+    annotation_df["Chromosome"] = annotation_df["Chromosome"].str.replace("chr", "", regex=True)
 
-    df = df.merge(annotation_df.assign(Chromosome=annotation_df["Chromosome"].str.replace("chr", "")),
-                  left_on="chromosome", right_on="Chromosome", how="left")
+    df_merged = df.merge(annotation_df, left_on="chromosome", right_on="Chromosome", how="left")
 
-    df["overlap_start"] = df[["cnv_start", "Start"]].max(axis=1).where(df["Start"].notna(), other=pd.NA)
-    df["overlap_end"] = df[["cnv_end", "End"]].min(axis=1).where(df["End"].notna(), other=pd.NA)
-    df["overlap"] = df["overlap_end"] - df["overlap_start"] + 1
+    print("df after merge: \n", df_merged[(df_merged["chromosome"] == "11") & (df_merged["cnv_start"] == 7800000) & (df_merged["cnv_end"] == 7900000) & (df_merged["hotspot_ID"] == "11_2800000_10700000")])
 
-    df = df.groupby(["sample", "sample_type", "chromosome", "hotspot_ID", "cnv_start", "cnv_end", "total_overlap"], as_index=False)["overlap"].sum()
-    df[colname] = ((df["overlap"] / (df["cnv_end"] - df["cnv_start"]+1)) * 100).where(df["overlap"] > 0, other=0)
+    df_merged["overlap_start"] = df_merged[["cnv_start", "Start"]].max(axis=1).where(df_merged["Start"].notna(), other=pd.NA)
+    df_merged["overlap_end"] = df_merged[["cnv_end", "End"]].min(axis=1).where(df_merged["End"].notna(), other=pd.NA)
+    df_merged["overlap"] = (df_merged["overlap_end"] - df_merged["overlap_start"] + 1).where(df_merged["End"].notna() & df_merged["Start"].notna(), other=pd.NA)
+    df_merged[colname] = ((df_merged["overlap"] / (df_merged["cnv_end"] - df_merged["cnv_start"]+1)) * 100).where(df_merged["overlap"] > 0, other=0) # includes case if annot_df is NA
     
-    df = df.drop(["Chromosome", "Start", "End", 'overlap_start', 'overlap_end', 'overlap'], axis=1)
+    print("df after overlap percentage calculation: \n", df_merged[(df_merged["chromosome"] == "11") & (df_merged["cnv_start"] == 7800000) & (df_merged["cnv_end"] == 7900000) & (df_merged["hotspot_ID"] == "11_2800000_10700000")])
+
+    print("df after column drop: \n", df_merged[(df_merged["chromosome"] == "11") & (df_merged["cnv_start"] == 7800000) & (df_merged["cnv_end"] == 7900000) & (df_merged["hotspot_ID"] == "11_2800000_10700000")])
+
+    #df_debug = df[(df["chromosome"] == "1") & (df["cnv_start"] == 16200000) & (df["cnv_end"] == 17500000) & (df["hotspot_ID"] == "1_16200000_17074942")]
+    #print(df_debug)
+
+    #df_debug = df[(df["chromosome"] == "11") & (df["cnv_start"] == 7800000) & (df["cnv_end"] == 7900000) & (df["hotspot_ID"] == "11_2800000_10700000")]
+    #print(df_debug)
+
+    #df_debug = df_debug.groupby(["sample", "sample_type", "chromosome", "hotspot_ID", "cnv_start", "cnv_end", "total_overlap"], as_index=False).sum()
+    #df_debug[colname] = ((df_debug["overlap"] / (df_debug["cnv_end"] - df_debug["cnv_start"]+1)) * 100).where(df_debug["overlap"] > 0, other=0)
     
-    return df[colname]
+    return df_merged[colname]
+
 
 # group by hotspots
 
@@ -125,34 +136,27 @@ highsignal_annot = blacklist_df[blacklist_df["Motivation"]=="High Signal Region"
 lowmap_annot = blacklist_df[blacklist_df["Motivation"]=="Low Mappability"].drop("Motivation", axis=1)
 gapregions_annot = pd.read_csv(gapregions_bed, sep="\t", names=["Chromosome", "Start", "End"], header=None)
 
-df_annotated = df 
 annotations = [
     (highsignal_annot, "% High Signal Region"),
     (lowmap_annot, "% Low Mappability Region"),
     (gapregions_annot, "Gap Fraction")
 ]
-
+df_annotated = df.copy()
 for annot, colname in annotations:
     df_annotated[colname] = apply_annotation(df_annotated, annot, colname)
 
-df_hotspots = group_hotspots(df_annotated)
+#df_hotspots = group_hotspots(df_annotated)
 
-# save excel
+# save excels
+
+writer = pd.ExcelWriter('merged_df.xlsx', engine='xlsxwriter')
+df.to_excel(writer, sheet_name='Sheet1')
+writer._save()
 
 writer = pd.ExcelWriter('cnvs_hotspots_mapped.xlsx', engine='xlsxwriter')
 df_annotated.to_excel(writer, sheet_name='Sheet1')
-writer.save()
+writer._save()
 
 writer = pd.ExcelWriter('hotspots_mapped.xlsx', engine='xlsxwriter')
 df_hotspots.to_excel(writer, sheet_name='Sheet1')
 writer.save()
-
-
-
-# visualisation
-
-fig = px.scatter(df_annotated, x="total_overlap", y="% Low Mappability Region", 
-                 labels={"sample": "Sample", "total_overlap": "Total Overlap", "% Low Mappability Region": "Low Mappability Region (%)"},
-                 title="Scatter Plot of Total Overlap vs. Low Mappability Region")
-
-fig.write_html("scatter_plot.html")

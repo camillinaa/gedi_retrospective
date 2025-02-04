@@ -1,6 +1,5 @@
 # import libraries
 import pandas as pd
-import pyranges as pr
 
 # import merged cnv-hotspot data 
 df = pd.read_excel("merged_df.xlsx")
